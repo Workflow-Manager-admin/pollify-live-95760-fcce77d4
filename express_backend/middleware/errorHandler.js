@@ -16,51 +16,144 @@ const errorHandler = (err, req, res, next) => {
   let error = { ...err };
   error.message = err.message;
 
-  // Log error for debugging
-  console.error('Error:', err);
+  // Enhanced error logging
+  console.error('API Error:', {
+    message: err.message,
+    stack: err.stack,
+    url: req.url,
+    method: req.method,
+    body: req.body,
+    params: req.params,
+    timestamp: new Date().toISOString(),
+    userAgent: req.get('User-Agent'),
+    ip: req.ip
+  });
 
-  // Supabase errors
-  if (err.message && err.message.includes('supabase')) {
+  // Supabase/Database errors
+  if (err.message && (err.message.includes('supabase') || err.message.includes('database'))) {
     error = {
-      message: 'Database error occurred',
-      statusCode: 500
+      message: 'Database service temporarily unavailable. Please try again in a moment.',
+      statusCode: 503,
+      code: 'DATABASE_ERROR'
     };
+  }
+
+  // Supabase connection errors
+  if (err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND') {
+    error = {
+      message: 'Database connection failed. Please try again later.',
+      statusCode: 503,
+      code: 'CONNECTION_ERROR'
+    };
+  }
+
+  // PostgreSQL errors
+  if (err.code && err.code.startsWith('23')) { // PostgreSQL constraint violations
+    if (err.code === '23505') { // Unique violation
+      error = {
+        message: 'Duplicate entry detected. This action has already been performed.',
+        statusCode: 409,
+        code: 'DUPLICATE_ENTRY'
+      };
+    } else {
+      error = {
+        message: 'Data constraint violation. Please check your input.',
+        statusCode: 400,
+        code: 'CONSTRAINT_VIOLATION'
+      };
+    }
   }
 
   // Validation errors
   if (err.name === 'ValidationError') {
     const message = Object.values(err.errors).map(val => val.message).join(', ');
     error = {
-      message,
-      statusCode: 400
+      message: `Validation failed: ${message}`,
+      statusCode: 400,
+      code: 'VALIDATION_ERROR'
+    };
+  }
+
+  // Express validator errors
+  if (err.array && typeof err.array === 'function') {
+    error = {
+      message: 'Input validation failed',
+      statusCode: 400,
+      code: 'INPUT_VALIDATION_ERROR',
+      errors: err.array()
     };
   }
 
   // JWT errors
   if (err.name === 'JsonWebTokenError') {
     error = {
-      message: 'Invalid token',
-      statusCode: 401
+      message: 'Authentication token is invalid',
+      statusCode: 401,
+      code: 'INVALID_TOKEN'
+    };
+  }
+
+  // Token expired
+  if (err.name === 'TokenExpiredError') {
+    error = {
+      message: 'Authentication token has expired',
+      statusCode: 401,
+      code: 'EXPIRED_TOKEN'
     };
   }
 
   // Rate limit errors
   if (err.status === 429) {
     error = {
-      message: 'Too many requests, please try again later',
-      statusCode: 429
+      message: 'Too many requests from this IP. Please try again in 15 minutes.',
+      statusCode: 429,
+      code: 'RATE_LIMIT_EXCEEDED'
+    };
+  }
+
+  // Timeout errors
+  if (err.code === 'ETIMEDOUT') {
+    error = {
+      message: 'Request timeout. Please try again.',
+      statusCode: 408,
+      code: 'TIMEOUT_ERROR'
+    };
+  }
+
+  // Payload too large
+  if (err.status === 413) {
+    error = {
+      message: 'Request payload too large',
+      statusCode: 413,
+      code: 'PAYLOAD_TOO_LARGE'
     };
   }
 
   // Default error
   const statusCode = error.statusCode || 500;
-  const message = error.message || 'Internal server error';
+  const message = error.message || 'An unexpected error occurred. Please try again later.';
 
-  res.status(statusCode).json({
+  // Response object
+  const errorResponse = {
     success: false,
     message,
-    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
-  });
+    code: error.code || 'INTERNAL_ERROR',
+    timestamp: new Date().toISOString(),
+    ...(error.errors && { errors: error.errors })
+  };
+
+  // Add stack trace in development
+  if (process.env.NODE_ENV === 'development') {
+    errorResponse.stack = err.stack;
+    errorResponse.details = {
+      url: req.url,
+      method: req.method,
+      params: req.params,
+      body: req.body
+    };
+  }
+
+  res.status(statusCode).json(errorResponse);
 };
 
 module.exports = errorHandler;
