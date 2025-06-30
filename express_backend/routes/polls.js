@@ -2,14 +2,9 @@ const express = require('express');
 const { body, param, validationResult } = require('express-validator');
 const router = express.Router();
 
-// Import Supabase client
-const { createClient } = require('@supabase/supabase-js');
-
-// Initialize Supabase client
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY
-);
+// Import services
+const PollService = require('../services/pollService');
+const VoteService = require('../services/voteService');
 
 /**
  * @swagger
@@ -136,27 +131,12 @@ router.post('/', [
 
     const { question, options } = req.body;
 
-    // Generate a unique slug for the poll
-    const slug = generateSlug();
-
-    // TODO: Implement poll creation in Supabase
-    // For now, return a mock response
-    const mockPoll = {
-      id: Date.now().toString(),
-      slug,
-      question,
-      options: options.map((option, index) => ({
-        id: `option_${index}`,
-        text: option,
-        votes: 0
-      })),
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
-    };
+    // Create poll using PollService
+    const pollData = await PollService.createPoll({ question, options });
 
     res.status(201).json({
       success: true,
-      data: mockPoll
+      data: pollData
     });
   } catch (error) {
     next(error);
@@ -216,24 +196,19 @@ router.get('/:slug', [
 
     const { slug } = req.params;
 
-    // TODO: Implement poll retrieval from Supabase
-    // For now, return a mock response
-    const mockPoll = {
-      id: '1',
-      slug,
-      question: 'What is your favorite programming language?',
-      options: [
-        { id: 'option_0', text: 'JavaScript', votes: 15 },
-        { id: 'option_1', text: 'Python', votes: 23 },
-        { id: 'option_2', text: 'TypeScript', votes: 8 }
-      ],
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
-    };
+    // Get poll using PollService
+    const pollData = await PollService.getPollBySlug(slug);
+
+    if (!pollData) {
+      return res.status(404).json({
+        success: false,
+        message: 'Poll not found'
+      });
+    }
 
     res.status(200).json({
       success: true,
-      data: mockPoll
+      data: pollData
     });
   } catch (error) {
     next(error);
@@ -276,6 +251,8 @@ router.get('/:slug', [
  *         description: Invalid vote data
  *       404:
  *         description: Poll not found
+ *       409:
+ *         description: Already voted
  *       500:
  *         description: Internal server error
  */
@@ -304,13 +281,30 @@ router.post('/:slug/vote', [
     const { slug } = req.params;
     const { optionId } = req.body;
 
-    // TODO: Implement vote submission to Supabase
-    // For now, return a mock response
-    res.status(200).json({
-      success: true,
-      message: 'Vote submitted successfully'
-    });
+    // Get poll by slug first
+    const poll = await PollService.getPollBySlug(slug);
+    if (!poll) {
+      return res.status(404).json({
+        success: false,
+        message: 'Poll not found'
+      });
+    }
+
+    // Get voter IP address
+    const voterIp = req.ip || req.connection.remoteAddress || req.socket.remoteAddress || 
+                   (req.connection.socket ? req.connection.socket.remoteAddress : null);
+
+    // Submit vote using VoteService
+    const voteResult = await VoteService.submitVote(poll.id, optionId, voterIp);
+
+    res.status(200).json(voteResult);
   } catch (error) {
+    if (error.message.includes('already voted')) {
+      return res.status(409).json({
+        success: false,
+        message: error.message
+      });
+    }
     next(error);
   }
 });
@@ -368,42 +362,23 @@ router.get('/:slug/results', [
 
     const { slug } = req.params;
 
-    // TODO: Implement results retrieval from Supabase
-    // For now, return a mock response
-    const mockResults = {
-      id: '1',
-      slug,
-      question: 'What is your favorite programming language?',
-      options: [
-        { id: 'option_0', text: 'JavaScript', votes: 15 },
-        { id: 'option_1', text: 'Python', votes: 23 },
-        { id: 'option_2', text: 'TypeScript', votes: 8 }
-      ],
-      totalVotes: 46,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
-    };
+    // Get poll results using PollService
+    const resultsData = await PollService.getPollResults(slug);
+
+    if (!resultsData) {
+      return res.status(404).json({
+        success: false,
+        message: 'Poll not found'
+      });
+    }
 
     res.status(200).json({
       success: true,
-      data: mockResults
+      data: resultsData
     });
   } catch (error) {
     next(error);
   }
 });
-
-/**
- * Generate a random slug for polls
- * @returns {string} Random slug
- */
-function generateSlug() {
-  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-  let result = '';
-  for (let i = 0; i < 8; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return result;
-}
 
 module.exports = router;
